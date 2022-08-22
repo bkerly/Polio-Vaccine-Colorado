@@ -1,0 +1,329 @@
+---
+title: "`r params$doc_title`"
+author: "Brian Erly, MD MPH; Shannon O'Brien, MD MPH"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document:
+    theme:
+      bootswatch: sandstone
+params:
+  county: DENVER
+  doc_title: Denver County Report
+---
+
+```{r setup and data, include=FALSE}
+source(file = "r_scripts/01_libraries and functions.R")
+source(file = "r_scripts/00_secrets.R")
+
+county_tract_ids <- read_csv("data/county_tract_ids.csv")
+
+options(tigris_use_cache = TRUE)
+
+suppressMessages({
+geom_with_age <- get_acs(
+  geography = "tract",
+  state = "CO",
+  variables = c(
+    Under_18 = "B09001_001"
+
+  ),
+  year = 2017,
+  geometry = TRUE
+) %>%
+  mutate(TractID = as.numeric(GEOID)) %>%
+  mutate(Under_18 = estimate) %>%
+  select(TractID, NAME,Under_18,geometry)
+}
+)
+
+predictions <- read_csv("data/model predictions.csv",
+  show_col_types = FALSE)
+
+Pediatric_Vaccine_Index <- read_csv("data/Pediatric_Vaccine_Index.csv",
+  show_col_types = FALSE) %>%
+  left_join(county_tract_ids) %>%
+  left_join(geom_with_age) %>%
+  left_join(predictions)
+
+Pediatric_Vaccine_Index_County <- Pediatric_Vaccine_Index %>%
+    filter(COUNTY %in% params$county) 
+
+
+Colorado_data_mr <- read_csv("data/Colorado_data_mr.csv",
+  show_col_types = FALSE) %>%
+  left_join(county_tract_ids) %>%
+  filter(COUNTY %in% params$county) %>%
+  left_join(geom_with_age)%>%
+  left_join(predictions)
+
+Colorado_data_mr_County <- Colorado_data_mr %>%
+    filter(COUNTY %in% params$county) 
+
+
+county_data <- read_csv(
+  sprintf("https://docs.google.com/uc?id=%s&export=download",
+    "1cjLn3Qkvs8hNJDGzCuqrDzbeNechUmkW"
+  ),
+  show_col_types = FALSE
+) %>% mutate(
+  COUNTY = toupper(County)
+) 
+
+
+
+```
+
+
+```{r intro,echo = FALSE, results = 'asis'}
+glue::glue(
+  "
+  **This is the pediatric COVID-19 vaccine modeling report for {params$county} County.**  
+  
+  There are {nrow(Pediatric_Vaccine_Index_County)} census tracts in {params$county} County. The median pediatric vaccination rate for {params$county} County census tracts is {median(Pediatric_Vaccine_Index_County$PERCENT_VAX_0_17)}%, with a range of {min(Pediatric_Vaccine_Index_County$PERCENT_VAX_0_17)} to {max(Pediatric_Vaccine_Index_County$PERCENT_VAX_0_17)}. 
+  
+  The charts shown below illustrate the percentile rank of {params$county} County pediatric vaccination compared to the state as a whole.
+  "
+) %>%
+  print()
+
+```
+
+
+```{r fig1, echo=FALSE, results = 'asis', fig.height = 3, fig.width = 8, fig.align = "center"}
+p1 <- Pediatric_Vaccine_Index_County %>%
+ggplot(aes(fill = PERCENT_VAX_0_17,geometry = geometry)) +
+  geom_sf()+
+    theme_void() +
+    scale_fill_viridis(option = "E",
+      breaks=c(0,25,50,75,100), name="Vaccination Rate", guide = guide_legend( keyheight = unit(5, units = "mm"), keywidth=unit(12, units = "mm"), label.position = "bottom", title.position = 'top', nrow=1) ) +
+  labs(title = "",
+       subtitle = "") +
+  theme(
+    legend.position = "bottom"
+  )
+
+p2 <- Pediatric_Vaccine_Index %>%
+  mutate(selcted_county = (COUNTY == params$county)) %>%
+  mutate(vax_pct = round(PERCENT_VAX_0_17/5,0)*5) %>%
+  group_by(vax_pct,selcted_county) %>%
+  summarize(count = n(),.groups = "drop") %>%
+  ggplot(aes(x=vax_pct,y=count,fill=selcted_county))+
+  geom_bar(position = "stack",stat="identity")+
+  #theme_void() +
+  scale_fill_viridis(discrete = T) +
+  xlab("")+
+  ylab("")+
+  labs(title = "",
+       subtitle = "")+
+        theme_fivethirtyeight()+
+  theme(axis.text.y=element_blank(),
+       legend.position = "none")
+
+
+ggarrange(p1,p2,nrow = 1,widths = c(1,1),
+          labels = "AUTO")
+
+glue::glue(
+  "
+  
+  *Figure A: Pediatric COVID-19 vaccination rate by census tract.*  
+  
+  *Figure B. Percent pediatric COVID-19 vaccination rate by census tract, with {params$county} County tracts indicated in yellow.*  
+
+  "
+) %>%
+  print()
+
+```
+
+\newpage
+
+
+## Predictive modeling of vaccination rate.  
+
+
+```{r deviance modeling,echo = FALSE, results = 'asis',fig.height = 6, fig.width = 8, fig.align = "center",warning=FALSE}
+
+
+glue::glue(
+  "
+ 
+ 
+  Based on modeling incorporating social, demographic, political, and healthcare access factors, {params$county} County has a predicted median tract vaccination rate of {round(median(Pediatric_Vaccine_Index_County$prediction),1)}%. Differences between actual and predicted vaccination rate are due to unmeasured factors, which include the effect of public health interventions.
+
+  "
+) %>%
+  print()
+
+p3 <-Pediatric_Vaccine_Index_County %>%
+    mutate(vax_pct = round(PERCENT_VAX_0_17/5,0)*5) %>%
+    mutate(pred_vax_pct = round(prediction/5,0)*5) %>%
+  ggplot() +
+  geom_bar(aes(x=vax_pct),fill="#3b528b")+
+   geom_bar(aes(x=pred_vax_pct),fill = "#5ec962",alpha = 0.5)+
+  geom_vline(xintercept = median(Pediatric_Vaccine_Index_County$PERCENT_VAX_0_17), color = "#3b528b",size = 2)+
+  geom_vline(xintercept = median(Pediatric_Vaccine_Index_County$prediction), color = "#5ec962",size = 2)+
+    theme_fivethirtyeight()+
+  theme(legend.position = "none")
+
+
+p4 <- Pediatric_Vaccine_Index %>%
+  mutate(selcted_county = (COUNTY == params$county)) %>%
+  ggplot(aes(x=PERCENT_VAX_0_17,y=prediction))+
+  geom_point(aes(shape = selcted_county,color = selcted_county))+
+  geom_abline(intercept = 0, slope = 1) + 
+  scale_color_viridis(discrete = TRUE)+
+  xlab("Pediatric Vaccination Rate")+
+  ylab("Predicted Pediatric Vaccination Rate")+
+  theme_fivethirtyeight()+
+  theme(legend.position = "none")
+
+
+p5 <- Pediatric_Vaccine_Index_County %>%
+  ggplot(aes(fill = prediction-PERCENT_VAX_0_17,geometry = geometry)) +
+  geom_sf()+
+    theme_void() +
+    scale_fill_viridis(option = "A",
+      breaks=c(-25,-12.5,0,12.5,25), name="", guide = guide_legend( keyheight = unit(5, units = "mm"), keywidth=unit(12, units = "mm"), label.position = "bottom", title.position = 'top', nrow=1) ) +
+  labs(title = "",
+       subtitle = "") +
+  theme(
+    legend.position = "bottom"
+  )
+
+ggarrange(p3,p4,p5,nrow = 2,ncol = 2, widths = c(1,1,2),heights = c(1,1,2),
+          labels = "AUTO",align = "h")
+
+glue::glue(
+  "
+  
+  *Figure A: Predicted vaccination rates (green) and actual vaccination rates (blue) for census tracts in {params$county} County. Vertical lines show median values.*  
+  
+  *Figure B. Predicted and actual vaccination rates by census tract in Coloraado. {params$county} County tracts shown in yellow. Tracts above the diagnoal line are overperforming relative to predictions. Tracts below the line are underperforming.*  
+  
+  *Figure C. Map of difference between predicted and actual pediatric vaccination rate by census tract in {params$county} County. Higher values (warmer colors) indicate relatively overperforming tracts.*
+
+  "
+) %>%
+  print()
+
+```
+\newpage
+
+  
+## Factors which affect vaccination
+
+A conceptual model was created to better understand the factors which are most influential in determining a county's pediatric vaccination rate. These factors are divided into four themes: Vaccine Beliefs, Perceived Vulnerability, Healthcare Access, and Socioeconomic Disadvantage.
+
+The ranking of each tract and county for these themes may suggest targeted interventions. For example, a county which has low overall vaccine belief may benefit from targeted messaging, while tracts with low healthcare access may benefit from additional providers or expanded clinic hours.
+
+![Vaccine Update Conceptual Model](Pediatric COVID Vaccine Analysis Conceptual Model.png)
+
+
+```{r factor modeling,echo = FALSE, results = 'asis',fig.height = 6, fig.width = 8, fig.align = "center"}
+
+glue::glue(
+  "
+ 
+  {params$county} County's median percentile ranking in these domains are:  
+  - Vaccine beliefs: {round(100*median(Pediatric_Vaccine_Index_County$Belief_pct),0)}th percentile  
+  - Perceived vulnerability: {round(100*median(Pediatric_Vaccine_Index_County$Perc_Vuln_pct),0)}th percentile  
+  - Healthcare access: {round(100*median(Pediatric_Vaccine_Index_County$HC_access_pct),0)}th percentile  
+  - Socioeconomic disadvantage: {round(100*median(Pediatric_Vaccine_Index_County$SE_Disadv_pct),0)}th percentile  
+  
+  The below maps reflect the distribution of these domains in {params$county} County:
+
+  "
+) %>%
+  print()
+
+p6 <- Pediatric_Vaccine_Index_County %>%
+  ggplot(aes(fill = 100*Belief_pct,geometry = geometry)) +
+  geom_sf()+
+    theme_void() +
+    scale_fill_viridis(option = "B",
+      breaks=c(0,25,50,75,100), name="", guide = guide_legend( keyheight = unit(5, units = "mm"), keywidth=unit(12, units = "mm"), label.position = "bottom", title.position = 'top', nrow=1) ) +
+  labs(title = "Vaccine Belief",
+       subtitle = "") +
+  theme(
+    legend.position = "bottom"
+  )
+
+p7 <- Pediatric_Vaccine_Index_County %>%
+  ggplot(aes(fill = 100*Perc_Vuln_pct,geometry = geometry)) +
+  geom_sf()+
+    theme_void() +
+    scale_fill_viridis(option = "C",
+      breaks=c(0,25,50,75,100), name="", guide = guide_legend( keyheight = unit(5, units = "mm"), keywidth=unit(12, units = "mm"), label.position = "bottom", title.position = 'top', nrow=1) ) +
+  labs(title = "Perceived Vulnerability",
+       subtitle = "") +
+  theme(
+    legend.position = "bottom"
+  )
+
+p8 <- Pediatric_Vaccine_Index_County %>%
+  ggplot(aes(fill = 100*HC_access_pct,geometry = geometry)) +
+  geom_sf()+
+    theme_void() +
+    scale_fill_viridis(option = "D",
+            breaks=c(0,25,50,75,100), 
+            name="", 
+            guide = guide_legend( keyheight = unit(5, units = "mm"), 
+                                  keywidth=unit(12, units = "mm"), 
+                                  label.position = "bottom", 
+                                  title.position = 'top', 
+                                  nrow=1,
+                                  drop = FALSE) 
+            ) +
+  labs(title = "Healthcare Access",
+       subtitle = "") +
+  theme(
+    legend.position = "bottom"
+  )
+
+p9 <- Pediatric_Vaccine_Index_County %>%
+  ggplot(aes(fill = 100*SE_Disadv_pct,geometry = geometry)) +
+  geom_sf()+
+    theme_void() +
+    scale_fill_viridis(option = "E",
+      breaks=c(0,25,50,75,100), name="", guide = guide_legend( keyheight = unit(5, units = "mm"), keywidth=unit(12, units = "mm"), label.position = "bottom", title.position = 'top', nrow=1) ) +
+  labs(title = "Socioeconomic Disadvantage",
+       subtitle = "") +
+  theme(
+    legend.position = "bottom"
+  )
+
+
+ggarrange(p6,p7,p8,p9,nrow = 2,ncol = 2, widths = c(1,1),heights = c(1,1),
+          labels = "AUTO",align = "h")
+
+glue::glue(
+  "
+  
+    
+  *Figure A: Belief in vaccine efficacy. Note tract level data is not available for these variables.*  
+  
+  *Figure B: Perceived vulnerability to COVID-19.*  
+  
+  *Figure C: Access to healthcare and vaccination resources.*
+  
+  *Figure D: Socioeconomic disadvantage.*
+
+  "
+) %>%
+  print()
+```
+
+\newpage
+
+
+### Notes  
+
+Data underlying the analysis and percentile ranking for vaccine themes can be found here: <https://docs.google.com/spreadsheets/d/1ev11xrT6BYuvQ1qsOcxNfPFV8CtKCMOwxhgTlgoTe8s/edit?usp=sharing>
+
+Specific questions about the analysis can be sent to:
+[brian.erly@state.co.us]<mailto:brian.erly@state.co.us>
+
+Analysis performed in R version 4.1.3 (2022-03-10). Document prepared in RMarkdown.
+
